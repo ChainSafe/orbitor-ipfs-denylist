@@ -94,6 +94,6 @@ If you discover:
 - Scam campaigns  
 - Abusive material  
 
-Please open an issue or submit a pull request with the CID or pattern.
+Please open an issue or submit a pull request with the CID or pattern. Make sure you append it at the end of the list.
 
 ---
