@@ -1,0 +1,179 @@
+name: Process Abuse Report
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  process:
+    if: github.event.label.name == 'abuse-report'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Extract CID from issue
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body;
+            if (!body) {
+              core.setFailed('Issue body is empty');
+              return;
+            }
+
+            // GitHub form issues render as markdown with headers.
+            // Extract the CID value from the form body.
+            const cidMatch = body.match(/(?:\/ipfs\/)?((?:bafy|bafk|bafz|Qm)[a-zA-Z2-7]{44,})/);
+            if (!cidMatch) {
+              core.setFailed('No valid CID found in issue body');
+              return;
+            }
+
+            const cid = cidMatch[1];
+            const path = `/ipfs/${cid}`;
+            core.info(`Extracted CID: ${cid}`);
+            core.setOutput('cid', cid);
+            core.setOutput('path', path);
+
+      - name: Check for duplicate
+        id: check
+        run: |
+          CID="${{ steps.extract.outputs.cid }}"
+          if grep -qF "$CID" cs-denylist.deny; then
+            echo "duplicate=true" >> "$GITHUB_OUTPUT"
+            echo "CID $CID is already in the denylist"
+          else
+            echo "duplicate=false" >> "$GITHUB_OUTPUT"
+            echo "CID $CID is new, will be added"
+          fi
+
+      - name: Append to denylist
+        if: steps.check.outputs.duplicate == 'false'
+        run: |
+          echo "${{ steps.extract.outputs.path }}" >> cs-denylist.deny
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cs-denylist.deny
+          git commit -m "Block ${{ steps.extract.outputs.cid }}
+
+          Abuse report: #${{ github.event.issue.number }}"
+          git push
+
+      - name: Wait for Rainbow to poll denylist
+        if: steps.check.outputs.duplicate == 'false'
+        run: |
+          echo "Waiting 90s for Rainbow gateways to fetch updated denylist..."
+          sleep 90
+
+      - name: Verify block on all gateways
+        id: verify
+        run: |
+          CID="${{ steps.extract.outputs.cid }}"
+
+          # Gateway IPs (bypass CDN to check each region directly)
+          declare -A GATEWAYS=(
+            ["EU (Cherry)"]="185.191.117.102"
+            ["LATAM (Latitude)"]="103.106.58.165"
+            ["APAC (OVH)"]="15.235.233.155"
+          )
+
+          RESULTS=""
+          ALL_BLOCKED=true
+
+          for region in "${!GATEWAYS[@]}"; do
+            ip="${GATEWAYS[$region]}"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              -H "Host: ipfs.orbitor.dev" \
+              "http://${ip}/ipfs/${CID}" 2>/dev/null || echo "timeout")
+
+            if [[ "$STATUS" == "410" || "$STATUS" == "403" || "$STATUS" == "451" ]]; then
+              RESULTS+="| ${region} | ${STATUS} | Blocked |\n"
+            else
+              RESULTS+="| ${region} | ${STATUS} | NOT blocked |\n"
+              ALL_BLOCKED=false
+            fi
+          done
+
+          {
+            echo "results<<EOF"
+            echo -e "$RESULTS"
+            echo "EOF"
+            echo "all_blocked=$ALL_BLOCKED"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment results on issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const duplicate = '${{ steps.check.outputs.duplicate }}';
+            const cid = '${{ steps.extract.outputs.cid }}';
+            const allBlocked = '${{ steps.verify.outputs.all_blocked }}';
+            const results = `${{ steps.verify.outputs.results }}`;
+
+            let body;
+            if (duplicate === 'true') {
+              body = [
+                `CID \`${cid}\` is already in the denylist. No action needed.`,
+                '',
+                'Closing as duplicate.'
+              ].join('\n');
+            } else if (allBlocked === 'true') {
+              body = [
+                `CID \`${cid}\` has been added to the denylist and verified on all gateways.`,
+                '',
+                '| Region | HTTP Status | Result |',
+                '|---|---|---|',
+                results.trim(),
+                '',
+                'Closing as resolved.'
+              ].join('\n');
+            } else {
+              body = [
+                `CID \`${cid}\` has been added to the denylist but **verification failed on some gateways**.`,
+                '',
+                '| Region | HTTP Status | Result |',
+                '|---|---|---|',
+                results.trim(),
+                '',
+                'Labeling `needs-attention` for manual follow-up. Rainbow may need more time to poll the denylist, or the gateway may need a restart.'
+              ].join('\n');
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body
+            });
+
+      - name: Close issue if resolved
+        if: steps.check.outputs.duplicate == 'true' || steps.verify.outputs.all_blocked == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              state: 'closed',
+              state_reason: 'completed'
+            });
+
+      - name: Label for follow-up if verification failed
+        if: steps.check.outputs.duplicate == 'false' && steps.verify.outputs.all_blocked == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: ['needs-attention']
+            });

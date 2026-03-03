@@ -1,0 +1,50 @@
+name: Abuse Report
+description: Report abusive content for denylist blocking on the Orbitor IPFS gateway
+title: "Block: [CID]"
+labels: ["abuse-report"]
+body:
+  - type: input
+    id: cid
+    attributes:
+      label: CID or IPFS Path
+      description: >
+        The IPFS CID or path to block. Accepts bare CID (bafybeig7rsd...) or full path (/ipfs/bafybeig7rsd...).
+      placeholder: "bafybeig7rsd..."
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Report Source
+      description: Where did this abuse report originate?
+      options:
+        - Cherry Servers
+        - Latitude.sh
+        - OVH
+        - IPFS Foundation
+        - User report
+        - Internal discovery
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Phishing
+        - Malware
+        - CSAM
+        - Copyright / DMCA
+        - Scam
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: >
+        Provider ticket number, reporter email, abuse report URL, or any other context.
+        For DMCA requests, include all required details per the DMCA takedown process.
+    validations:
+      required: false
