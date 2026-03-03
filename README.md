@@ -29,11 +29,27 @@ For external abuse reporting (not specific to Orbitor), use the [IPFS Foundation
 
 ---
 
+## Email Automation
+
+Abuse reports from hosting providers (via `abuse@chainsafe.io`) are automatically processed by a Cloudflare Email Worker:
+
+1. Google Group forwards abuse emails to `abuse-intake@orbitor.dev`
+2. Cloudflare Email Worker parses the email, extracts CID(s) from URLs
+3. Worker creates a GitHub Issue with the `abuse-report` label
+4. The GitHub Action processes it from there (denylist append, verify, close)
+
+Emails without extractable CIDs are forwarded to the group for manual handling.
+
+See [`email-worker/README.md`](email-worker/README.md) for setup and deployment.
+
+---
+
 ## 📦 File Structure
 
 - `cs-denylist.deny` — Main denylist file in IPFS Gateway Blocklist format.
 - `.github/ISSUE_TEMPLATE/abuse-report.yml` — Structured abuse report form
 - `.github/workflows/process-abuse-report.yml` — Automated processing pipeline
+- `email-worker/` — Cloudflare Email Worker for automated email intake
 
 ---
 
