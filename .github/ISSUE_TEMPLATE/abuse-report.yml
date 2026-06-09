@@ -1,8 +1,16 @@
-name: Abuse Report
-description: Report abusive content for denylist blocking on the Orbitor IPFS gateway
+name: Abuse Report (internal)
+description: Maintainer/automation use. Adds a CID to the Orbitor gateway denylist.
 title: "Block: [CID]"
-labels: ["abuse-report"]
 body:
+  - type: markdown
+    attributes:
+      value: >
+        **Internal / automation use only.** External abuse reports should go to
+        `abuse@chainsafe.io` or the IPFS Foundation form, not this tracker.
+        A maintainer must apply the `abuse-report` label to trigger the block.
+        This repository is **public**: do not paste reporter PII, ticket
+        contents, or raw abuse evidence here. Keep the full report in the abuse
+        mailbox.
   - type: input
     id: cid
     attributes:
@@ -44,7 +52,7 @@ body:
     attributes:
       label: Details
       description: >
-        Provider ticket number, reporter email, abuse report URL, or any other context.
-        For DMCA requests, include all required details per the DMCA takedown process.
+        Non-identifying context only (e.g. a provider ticket reference). Do not
+        include reporter PII or the raw abuse report. This repo is public.
     validations:
       required: false

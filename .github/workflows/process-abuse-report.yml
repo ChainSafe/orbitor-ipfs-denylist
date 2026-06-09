@@ -12,14 +12,11 @@ concurrency:
 
 jobs:
   process:
-    # Gate on the abuse-report label AND a trusted issue author. This repo is
-    # public and the issue form auto-applies the label, so without the author
-    # check any GitHub user could open the form and auto-commit an arbitrary
-    # block. Email-worker issues are created with a ChainSafe member PAT, so
-    # they satisfy this check.
-    if: >
-      github.event.label.name == 'abuse-report' &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association)
+    # Trigger only when the abuse-report label is applied. GitHub only lets
+    # users with triage/write access add labels, and the issue form no longer
+    # auto-applies it, so an external user cannot trigger a block. The label is
+    # applied by a maintainer or by the email worker's token.
+    if: github.event.label.name == 'abuse-report'
     runs-on: ubuntu-latest
     permissions:
       contents: write

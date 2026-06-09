@@ -11,21 +11,20 @@ dangerous or malicious content identified across the IPFS network.
 
 ## Reporting Abuse
 
-**To block abusive content on the Orbitor gateway:**
+**External reporters:** email `abuse@chainsafe.io`, or use the [IPFS Foundation abuse form](https://ipfs.fyi/report-abuse) / `abuse@ipfs.io`. This issue tracker is for maintainers and automation, not for public reports.
 
-1. [Create a new abuse report issue](../../issues/new?template=abuse-report.yml)
-2. Fill in the CID, report source, category, and any details
-3. A GitHub Action will automatically:
-   - Validate the CID format
-   - Check for duplicates
-   - Append the CID to the denylist
-   - Wait for Rainbow gateways to pick up the update
-   - Verify the block on all 3 regional gateways (EU, LATAM, APAC)
-   - Post verification results and close the issue
+**How a block gets applied (maintainers / automation):**
 
-The entire process takes ~2-3 minutes after issue creation.
+1. A CID enters the tracker from the email worker (provider reports to `abuse@chainsafe.io`) or from a maintainer using the internal report form.
+2. The block is triggered by the `abuse-report` label. The email worker applies it automatically; for the manual form a maintainer applies it. Only users with write access can add labels, which is what authorizes the block.
+3. A GitHub Action then:
+   - Validates the CID with a canonical parser
+   - Checks for duplicates
+   - Appends the CID to the denylist
+   - Polls the 3 regional gateways (EU, LATAM, APAC) until the block is confirmed
+   - Posts verification results and closes the issue
 
-For external abuse reporting (not specific to Orbitor), use the [IPFS Foundation abuse form](https://ipfs.fyi/report-abuse) or email `abuse@ipfs.io`.
+Verification polls for up to ~10 minutes (usually much faster), to allow for the denylist CDN cache and the gateway refresh interval.
 
 ---
 
@@ -142,6 +141,6 @@ If you discover:
 - Scam campaigns
 - Abusive material
 
-Please open an [abuse report issue](../../issues/new?template=abuse-report.yml) or submit a pull request with the CID or pattern. Make sure you append it at the end of the list.
+Email `abuse@chainsafe.io` with the CID or pattern. Maintainers can also submit a pull request appending the entry to the end of the list.
 
 ---

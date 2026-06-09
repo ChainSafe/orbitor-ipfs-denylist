@@ -30,12 +30,15 @@ function extractCIDs(text) {
 }
 
 function detectSource(from, subject, body) {
-  const text = `${from} ${subject} ${body}`.toLowerCase();
+  const header = `${from} ${subject}`.toLowerCase();
+  const text = `${header} ${body}`.toLowerCase();
   if (text.includes("cloudflare")) return "Cloudflare";
   if (text.includes("cherry")) return "Cherry Servers";
   if (text.includes("latitude")) return "Latitude.sh";
   if (text.includes("ovh") || text.includes("ovhcloud")) return "OVH";
-  if (text.includes("ipfs")) return "IPFS Foundation";
+  // Every report body contains "/ipfs/<cid>", so only treat "ipfs" as the
+  // Foundation when it appears in the sender or subject.
+  if (header.includes("ipfs")) return "IPFS Foundation";
   return "Unknown";
 }
 
