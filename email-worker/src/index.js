@@ -1,8 +1,9 @@
 import PostalMime from "postal-mime";
 
 // Match CIDs in URLs or bare text. Covers CIDv0 (Qm...) and CIDv1 (bafy.../bafk.../bafz...)
+// CIDv1 (bafy/bafk/bafz) is base32 lowercase; CIDv0 (Qm) is base58btc.
 const CID_PATTERN =
-  /(?:\/ipfs\/)((?:bafy|bafk|bafz|Qm)[a-zA-Z2-7]{44,})/gi;
+  /(?:\/ipfs\/)((?:bafy|bafk|bafz)[a-z2-7]{44,}|Qm[1-9A-HJ-NP-Za-km-z]{44})/g;
 
 // Cloudflare abuse reports defang URLs: hxxps, [.] etc.
 function refangText(text) {
@@ -21,7 +22,7 @@ function extractCIDs(text) {
     matches.push(match[1]);
   }
   // Also try bare CIDs not in /ipfs/ paths
-  const bareCIDPattern = /\b((?:bafy|bafk|bafz)[a-zA-Z2-7]{44,}|Qm[a-zA-Z0-9]{44})\b/g;
+  const bareCIDPattern = /\b((?:bafy|bafk|bafz)[a-z2-7]{44,}|Qm[1-9A-HJ-NP-Za-km-z]{44})\b/g;
   while ((match = bareCIDPattern.exec(refanged)) !== null) {
     matches.push(match[1]);
   }

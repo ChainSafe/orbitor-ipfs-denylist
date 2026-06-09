@@ -4,9 +4,22 @@ on:
   issues:
     types: [labeled]
 
+# Serialize runs so two reports landing close together cannot race on the
+# denylist file or the push to main.
+concurrency:
+  group: denylist-update
+  cancel-in-progress: false
+
 jobs:
   process:
-    if: github.event.label.name == 'abuse-report'
+    # Gate on the abuse-report label AND a trusted issue author. This repo is
+    # public and the issue form auto-applies the label, so without the author
+    # check any GitHub user could open the form and auto-commit an arbitrary
+    # block. Email-worker issues are created with a ChainSafe member PAT, so
+    # they satisfy this check.
+    if: >
+      github.event.label.name == 'abuse-report' &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,7 +43,8 @@ jobs:
 
             // GitHub form issues render as markdown with headers.
             // Extract the CID value from the form body.
-            const cidMatch = body.match(/(?:\/ipfs\/)?((?:bafy|bafk|bafz|Qm)[a-zA-Z2-7]{44,})/);
+            // CIDv1 (bafy/bafk/bafz) is base32 lowercase; CIDv0 (Qm) is base58btc.
+            const cidMatch = body.match(/(?:\/ipfs\/)?((?:bafy|bafk|bafz)[a-z2-7]{44,}|Qm[1-9A-HJ-NP-Za-km-z]{44})/);
             if (!cidMatch) {
               core.setFailed('No valid CID found in issue body');
               return;
@@ -64,40 +78,62 @@ jobs:
           git commit -m "Block ${{ steps.extract.outputs.cid }}
 
           Abuse report: #${{ github.event.issue.number }}"
-          git push
+          # Rebase on latest main and retry, in case another report pushed first.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt"
+              break
+            fi
+            echo "Push rejected (attempt $attempt), rebasing on origin/main..."
+            git pull --rebase origin main
+          done
 
-      - name: Wait for Rainbow to poll denylist
-        if: steps.check.outputs.duplicate == 'false'
-        run: |
-          echo "Waiting 90s for Rainbow gateways to fetch updated denylist..."
-          sleep 90
-
-      - name: Verify block on all gateways
+      - name: Verify block on all gateways (poll with retry)
         id: verify
+        if: steps.check.outputs.duplicate == 'false'
         run: |
           CID="${{ steps.extract.outputs.cid }}"
 
-          # Gateway IPs (bypass CDN to check each region directly)
+          # Gateway IPs (bypass CDN to hit each region directly).
+          # Keep in sync with the IPFS gateway inventory in
+          # infrastructure-general/ansible/ipfs-execution.
           declare -A GATEWAYS=(
             ["EU (Cherry)"]="185.191.117.102"
             ["LATAM (Latitude)"]="103.106.58.165"
             ["APAC (OVH)"]="15.235.233.155"
           )
 
+          # raw.githubusercontent.com caches for ~5 min and nopfs refreshes
+          # remote denylists on its own interval, so poll for several minutes
+          # before declaring failure rather than checking once after 90s.
+          MAX_ATTEMPTS=12
+          SLEEP=45
           RESULTS=""
-          ALL_BLOCKED=true
+          ALL_BLOCKED=false
 
-          for region in "${!GATEWAYS[@]}"; do
-            ip="${GATEWAYS[$region]}"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
-              -H "Host: ipfs.orbitor.dev" \
-              "http://${ip}/ipfs/${CID}" 2>/dev/null || echo "timeout")
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            RESULTS=""
+            ALL_BLOCKED=true
+            for region in "${!GATEWAYS[@]}"; do
+              ip="${GATEWAYS[$region]}"
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+                -H "Host: ipfs.orbitor.dev" \
+                "http://${ip}/ipfs/${CID}" 2>/dev/null || echo "timeout")
+              if [[ "$STATUS" == "410" || "$STATUS" == "403" || "$STATUS" == "451" ]]; then
+                RESULTS+="| ${region} | ${STATUS} | Blocked |\n"
+              else
+                RESULTS+="| ${region} | ${STATUS} | NOT blocked |\n"
+                ALL_BLOCKED=false
+              fi
+            done
 
-            if [[ "$STATUS" == "410" || "$STATUS" == "403" || "$STATUS" == "451" ]]; then
-              RESULTS+="| ${region} | ${STATUS} | Blocked |\n"
-            else
-              RESULTS+="| ${region} | ${STATUS} | NOT blocked |\n"
-              ALL_BLOCKED=false
+            if [[ "$ALL_BLOCKED" == "true" ]]; then
+              echo "All gateways blocked on attempt $attempt"
+              break
+            fi
+            if [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; then
+              echo "Attempt $attempt/$MAX_ATTEMPTS: not all blocked yet, waiting ${SLEEP}s..."
+              sleep "$SLEEP"
             fi
           done
 
