@@ -98,34 +98,51 @@ export default {
     const source = detectSource(from, subject, content);
     const category = detectCategory(content);
 
+    const ghHeaders = {
+      Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      "Content-Type": "application/json",
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "orbitor-abuse-worker",
+    };
+
     // Create one issue per unique CID for clean 1:1 tracking
     for (const cid of cids) {
       const issueBody = buildIssueBody([cid], source, category);
 
-      const response = await fetch(
+      // Create the issue WITHOUT labels first.
+      const createResp = await fetch(
         `https://api.github.com/repos/${env.GITHUB_REPO}/issues`,
         {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-            "Content-Type": "application/json",
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "orbitor-abuse-worker",
-          },
-          body: JSON.stringify({
-            title: `Block: ${cid}`,
-            body: issueBody,
-            labels: ["abuse-report"],
-          }),
+          headers: ghHeaders,
+          body: JSON.stringify({ title: `Block: ${cid}`, body: issueBody }),
         }
       );
 
-      if (!response.ok) {
-        const err = await response.text();
+      if (!createResp.ok) {
+        const err = await createResp.text();
         // Forward to group so the report isn't lost
         await message.forward(env.FALLBACK_EMAIL);
-        throw new Error(`GitHub API error: ${response.status} ${err}`);
+        throw new Error(`GitHub create-issue error: ${createResp.status} ${err}`);
+      }
+
+      // Apply the label in a separate call. Labels set at creation time do not
+      // reliably emit a `labeled` event, which is what the workflow triggers on.
+      const { number } = await createResp.json();
+      const labelResp = await fetch(
+        `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${number}/labels`,
+        {
+          method: "POST",
+          headers: ghHeaders,
+          body: JSON.stringify({ labels: ["abuse-report"] }),
+        }
+      );
+
+      if (!labelResp.ok) {
+        const err = await labelResp.text();
+        await message.forward(env.FALLBACK_EMAIL);
+        throw new Error(`GitHub add-label error: ${labelResp.status} ${err}`);
       }
     }
 

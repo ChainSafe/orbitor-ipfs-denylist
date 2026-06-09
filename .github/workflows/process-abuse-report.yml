@@ -12,10 +12,11 @@ concurrency:
 
 jobs:
   process:
-    # Trigger only when the abuse-report label is applied. GitHub only lets
-    # users with triage/write access add labels, and the issue form no longer
-    # auto-applies it, so an external user cannot trigger a block. The label is
-    # applied by a maintainer or by the email worker's token.
+    # Trigger when the abuse-report label is applied (the form no longer
+    # auto-applies it). This job has contents: write and pushes to the denylist,
+    # so label-add permission alone is not a sufficient authorization boundary:
+    # triage users can add labels but must not gain an indirect write-to-main
+    # path. The first step verifies the actor has write/maintain/admin.
     if: github.event.label.name == 'abuse-report'
     runs-on: ubuntu-latest
     permissions:
@@ -23,6 +24,23 @@ jobs:
       issues: write
 
     steps:
+      - name: Verify labeler has write access
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            if (!["admin", "maintain", "write"].includes(data.permission)) {
+              core.setFailed(
+                `@${context.actor} has '${data.permission}' permission. ` +
+                  `Applying the abuse-report label requires write access or higher, ` +
+                  `because this workflow commits to the denylist and pushes to main.`
+              );
+            }
+
       - uses: actions/checkout@v4
         with:
           ref: main
