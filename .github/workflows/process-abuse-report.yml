@@ -95,8 +95,7 @@ jobs:
           CID="${{ steps.extract.outputs.cid }}"
 
           # Gateway IPs (bypass CDN to hit each region directly).
-          # Keep in sync with the IPFS gateway inventory in
-          # infrastructure-general/ansible/ipfs-execution.
+          # Keep in sync with the IPFS gateway inventory in the private IaC repo.
           declare -A GATEWAYS=(
             ["EU (Cherry)"]="185.191.117.102"
             ["LATAM (Latitude)"]="103.106.58.165"
