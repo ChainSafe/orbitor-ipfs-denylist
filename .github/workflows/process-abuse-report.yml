@@ -30,31 +30,38 @@ jobs:
         with:
           ref: main
 
-      - name: Extract CID from issue
-        id: extract
-        uses: actions/github-script@v7
+      - uses: actions/setup-node@v4
         with:
-          script: |
-            const body = context.payload.issue.body;
-            if (!body) {
-              core.setFailed('Issue body is empty');
-              return;
-            }
+          node-version: "20"
 
-            // GitHub form issues render as markdown with headers.
-            // Extract the CID value from the form body.
-            // CIDv1 (bafy/bafk/bafz) is base32 lowercase; CIDv0 (Qm) is base58btc.
-            const cidMatch = body.match(/(?:\/ipfs\/)?((?:bafy|bafk|bafz)[a-z2-7]{44,}|Qm[1-9A-HJ-NP-Za-km-z]{44})/);
-            if (!cidMatch) {
-              core.setFailed('No valid CID found in issue body');
-              return;
+      - name: Extract and validate CID
+        id: extract
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Validate with a canonical CID parser, not a hand-rolled regex,
+          # since the extracted value is committed straight to the denylist.
+          WORK="$RUNNER_TEMP/cidtools"
+          mkdir -p "$WORK"
+          cd "$WORK"
+          npm install multiformats@13 --silent --no-fund --no-audit
+          node --input-type=module -e '
+            import { CID } from "multiformats/cid";
+            import { appendFileSync } from "node:fs";
+            const refang = (t) =>
+              t.replace(/hxxps?/gi, "https").replace(/\[\.\]/g, ".").replace(/\[dot\]/gi, ".");
+            const body = refang(process.env.ISSUE_BODY || "");
+            let cid = null;
+            for (const token of body.match(/[A-Za-z0-9]{46,}/g) || []) {
+              try { CID.parse(token); cid = token; break; } catch {}
             }
-
-            const cid = cidMatch[1];
-            const path = `/ipfs/${cid}`;
-            core.info(`Extracted CID: ${cid}`);
-            core.setOutput('cid', cid);
-            core.setOutput('path', path);
+            if (!cid) {
+              console.error("No valid CID found in issue body");
+              process.exit(1);
+            }
+            console.log("Extracted CID:", cid);
+            appendFileSync(process.env.GITHUB_OUTPUT, `cid=${cid}\npath=/ipfs/${cid}\n`);
+          '
 
       - name: Check for duplicate
         id: check
@@ -79,14 +86,20 @@ jobs:
 
           Abuse report: #${{ github.event.issue.number }}"
           # Rebase on latest main and retry, in case another report pushed first.
+          pushed=false
           for attempt in 1 2 3; do
             if git push origin HEAD:main; then
               echo "Pushed on attempt $attempt"
+              pushed=true
               break
             fi
             echo "Push rejected (attempt $attempt), rebasing on origin/main..."
-            git pull --rebase origin main
+            git pull --rebase origin main || true
           done
+          if [ "$pushed" != true ]; then
+            echo "::error::Failed to push denylist update after 3 attempts"
+            exit 1
+          fi
 
       - name: Verify block on all gateways (poll with retry)
         id: verify

@@ -1,9 +1,10 @@
 import PostalMime from "postal-mime";
+import { CID } from "multiformats/cid";
 
-// Match CIDs in URLs or bare text. Covers CIDv0 (Qm...) and CIDv1 (bafy.../bafk.../bafz...)
-// CIDv1 (bafy/bafk/bafz) is base32 lowercase; CIDv0 (Qm) is base58btc.
-const CID_PATTERN =
-  /(?:\/ipfs\/)((?:bafy|bafk|bafz)[a-z2-7]{44,}|Qm[1-9A-HJ-NP-Za-km-z]{44})/g;
+// Candidate tokens: any base32/base58-ish run long enough to be a CID.
+// These are only candidates — real validation is done by CID.parse below,
+// so we accept any valid CID and reject CID-shaped junk.
+const CID_CANDIDATE = /[A-Za-z0-9]{46,}/g;
 
 // Cloudflare abuse reports defang URLs: hxxps, [.] etc.
 function refangText(text) {
@@ -16,17 +17,16 @@ function refangText(text) {
 
 function extractCIDs(text) {
   const refanged = refangText(text);
-  const matches = [];
-  let match;
-  while ((match = CID_PATTERN.exec(refanged)) !== null) {
-    matches.push(match[1]);
+  const valid = [];
+  for (const token of refanged.match(CID_CANDIDATE) || []) {
+    try {
+      CID.parse(token); // throws on anything that is not a real CID
+      valid.push(token);
+    } catch {
+      // not a CID, skip
+    }
   }
-  // Also try bare CIDs not in /ipfs/ paths
-  const bareCIDPattern = /\b((?:bafy|bafk|bafz)[a-z2-7]{44,}|Qm[1-9A-HJ-NP-Za-km-z]{44})\b/g;
-  while ((match = bareCIDPattern.exec(refanged)) !== null) {
-    matches.push(match[1]);
-  }
-  return [...new Set(matches)];
+  return [...new Set(valid)];
 }
 
 function detectSource(from, subject, body) {
@@ -49,10 +49,15 @@ function detectCategory(body) {
   return "Other";
 }
 
-function buildIssueBody(cids, source, category, from, subject, body) {
-  // Match the GitHub Issues form format so the existing workflow can parse it
+function buildIssueBody(cids, source, category) {
+  // This repo is PUBLIC. Do NOT include reporter PII, sender, subject, or the
+  // raw email body. The full report (with evidence) is retained privately in
+  // the abuse mailbox via the forwarded copy. Only the CID, provider source,
+  // and category are needed to drive the denylist, and the CID is already
+  // public in the denylist itself.
+  // Keep the GitHub Issues form headers so the workflow parser still works.
   const cidList = cids.join(", ");
-  const lines = [
+  return [
     `### CID or IPFS Path`,
     "",
     cidList,
@@ -67,26 +72,19 @@ function buildIssueBody(cids, source, category, from, subject, body) {
     "",
     `### Details`,
     "",
-    `**Automated intake from email**`,
-    `- **From:** ${from}`,
-    `- **Subject:** ${subject}`,
-    "",
-    "Original email body:",
-    "```",
-    body.substring(0, 3000),
-    "```",
-  ];
-  return lines.join("\n");
+    "Automated intake from a provider abuse email. Reporter details and the full report are retained privately in the abuse mailbox and are intentionally omitted from this public issue.",
+  ].join("\n");
 }
 
 export default {
   async email(message, env) {
     const email = await new PostalMime().parse(message.raw);
-    const body = email.text || "";
+    // Provider abuse mail is frequently HTML-only, so scan both parts.
+    const content = [email.text, email.html].filter(Boolean).join("\n");
     const subject = email.subject || "";
     const from = message.from || "";
 
-    const cids = extractCIDs(body);
+    const cids = extractCIDs(content);
 
     if (cids.length === 0) {
       // No CIDs found — forward to the group for manual handling
@@ -94,19 +92,12 @@ export default {
       return;
     }
 
-    const source = detectSource(from, subject, body);
-    const category = detectCategory(body);
+    const source = detectSource(from, subject, content);
+    const category = detectCategory(content);
 
     // Create one issue per unique CID for clean 1:1 tracking
     for (const cid of cids) {
-      const issueBody = buildIssueBody(
-        [cid],
-        source,
-        category,
-        from,
-        subject,
-        body
-      );
+      const issueBody = buildIssueBody([cid], source, category);
 
       const response = await fetch(
         `https://api.github.com/repos/${env.GITHUB_REPO}/issues`,
