@@ -9,10 +9,46 @@ dangerous or malicious content identified across the IPFS network.
 
 ---
 
+## Reporting Abuse
+
+**External reporters:** email `abuse@chainsafe.io`, or use the [IPFS Foundation abuse form](https://ipfs.fyi/report-abuse) / `abuse@ipfs.io`. This issue tracker is for maintainers and automation, not for public reports.
+
+**How a block gets applied (maintainers / automation):**
+
+1. A CID enters the tracker from the email worker (provider reports to `abuse@chainsafe.io`) or from a maintainer using the internal report form.
+2. The block is triggered by the `abuse-report` label. The email worker applies it automatically; for the manual form a maintainer applies it. Only users with write access can add labels, which is what authorizes the block.
+3. A GitHub Action then:
+   - Validates the CID with a canonical parser
+   - Checks for duplicates
+   - Appends the CID to the denylist
+   - Polls the 3 regional gateways (EU, LATAM, APAC) until the block is confirmed
+   - Posts verification results and closes the issue
+
+Verification polls for up to ~10 minutes (usually much faster), to allow for the denylist CDN cache and the gateway refresh interval.
+
+---
+
+## Email Automation
+
+Abuse reports from hosting providers (via `abuse@chainsafe.io`) are automatically processed by a Cloudflare Email Worker:
+
+1. Google Group forwards abuse emails to `abuse-intake@orbitor.dev`
+2. Cloudflare Email Worker parses the email, extracts CID(s) from URLs
+3. Worker creates a GitHub Issue with the `abuse-report` label
+4. The GitHub Action processes it from there (denylist append, verify, close)
+
+Emails without extractable CIDs are forwarded to the group for manual handling.
+
+See [`email-worker/README.md`](email-worker/README.md) for setup and deployment.
+
+---
+
 ## 📦 File Structure
 
 - `cs-denylist.deny` — Main denylist file in IPFS Gateway Blocklist format.
-- `README.md` — Documentation for usage and contributions.
+- `.github/ISSUE_TEMPLATE/abuse-report.yml` — Structured abuse report form
+- `.github/workflows/process-abuse-report.yml` — Automated processing pipeline
+- `email-worker/` — Cloudflare Email Worker for automated email intake
 
 ---
 
@@ -81,6 +117,17 @@ hints:
 
 ```
 
+The denylist is append-only. Do not edit or remove existing entries while Rainbow gateways are running. See the [full specification](https://specs.ipfs.tech/compact-denylist-format/) for details.
+
+---
+
+## Manual Usage
+
+If you need to add entries without the automated workflow:
+
+1. Append the `/ipfs/<CID>` line to the **end** of `cs-denylist.deny`
+2. Commit and push to `main`
+3. Rainbow gateways will poll the updated file automatically
 
 ---
 
@@ -89,11 +136,11 @@ hints:
 Contributions are welcome!
 
 If you discover:
-- Phishing content  
-- Malware  
-- Scam campaigns  
-- Abusive material  
+- Phishing content
+- Malware
+- Scam campaigns
+- Abusive material
 
-Please open an issue or submit a pull request with the CID or pattern. Make sure you append it at the end of the list.
+Email `abuse@chainsafe.io` with the CID or pattern. Maintainers can also submit a pull request appending the entry to the end of the list.
 
 ---

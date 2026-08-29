@@ -1,0 +1,242 @@
+name: Process Abuse Report
+
+on:
+  issues:
+    types: [labeled]
+
+# Serialize runs so two reports landing close together cannot race on the
+# denylist file or the push to main.
+concurrency:
+  group: denylist-update
+  cancel-in-progress: false
+
+jobs:
+  process:
+    # Trigger when the abuse-report label is applied (the form no longer
+    # auto-applies it). This job has contents: write and pushes to the denylist,
+    # so label-add permission alone is not a sufficient authorization boundary:
+    # triage users can add labels but must not gain an indirect write-to-main
+    # path. The first step verifies the actor has write/maintain/admin.
+    if: github.event.label.name == 'abuse-report'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Verify labeler has write access
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            if (!["admin", "maintain", "write"].includes(data.permission)) {
+              core.setFailed(
+                `@${context.actor} has '${data.permission}' permission. ` +
+                  `Applying the abuse-report label requires write access or higher, ` +
+                  `because this workflow commits to the denylist and pushes to main.`
+              );
+            }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Extract and validate CID
+        id: extract
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          # Validate with a canonical CID parser, not a hand-rolled regex,
+          # since the extracted value is committed straight to the denylist.
+          WORK="$RUNNER_TEMP/cidtools"
+          mkdir -p "$WORK"
+          cd "$WORK"
+          npm install multiformats@13 --silent --no-fund --no-audit
+          node --input-type=module -e '
+            import { CID } from "multiformats/cid";
+            import { appendFileSync } from "node:fs";
+            const refang = (t) =>
+              t.replace(/hxxps?/gi, "https").replace(/\[\.\]/g, ".").replace(/\[dot\]/gi, ".");
+            const body = refang(process.env.ISSUE_BODY || "");
+            let cid = null;
+            for (const token of body.match(/[A-Za-z0-9]{46,}/g) || []) {
+              try { CID.parse(token); cid = token; break; } catch {}
+            }
+            if (!cid) {
+              console.error("No valid CID found in issue body");
+              process.exit(1);
+            }
+            console.log("Extracted CID:", cid);
+            appendFileSync(process.env.GITHUB_OUTPUT, `cid=${cid}\npath=/ipfs/${cid}\n`);
+          '
+
+      - name: Check for duplicate
+        id: check
+        run: |
+          CID="${{ steps.extract.outputs.cid }}"
+          if grep -qF "$CID" cs-denylist.deny; then
+            echo "duplicate=true" >> "$GITHUB_OUTPUT"
+            echo "CID $CID is already in the denylist"
+          else
+            echo "duplicate=false" >> "$GITHUB_OUTPUT"
+            echo "CID $CID is new, will be added"
+          fi
+
+      - name: Append to denylist
+        if: steps.check.outputs.duplicate == 'false'
+        run: |
+          echo "${{ steps.extract.outputs.path }}" >> cs-denylist.deny
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cs-denylist.deny
+          git commit -m "Block ${{ steps.extract.outputs.cid }}
+
+          Abuse report: #${{ github.event.issue.number }}"
+          # Rebase on latest main and retry, in case another report pushed first.
+          pushed=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt"
+              pushed=true
+              break
+            fi
+            echo "Push rejected (attempt $attempt), rebasing on origin/main..."
+            git pull --rebase origin main || true
+          done
+          if [ "$pushed" != true ]; then
+            echo "::error::Failed to push denylist update after 3 attempts"
+            exit 1
+          fi
+
+      - name: Verify block on all gateways (poll with retry)
+        id: verify
+        if: steps.check.outputs.duplicate == 'false'
+        run: |
+          CID="${{ steps.extract.outputs.cid }}"
+
+          # Gateway IPs (bypass CDN to hit each region directly).
+          # Keep in sync with the IPFS gateway inventory in the private IaC repo.
+          declare -A GATEWAYS=(
+            ["EU (Cherry)"]="185.191.117.102"
+            ["LATAM (Latitude)"]="103.106.58.165"
+            ["APAC (OVH)"]="15.235.233.155"
+          )
+
+          # raw.githubusercontent.com caches for ~5 min and nopfs refreshes
+          # remote denylists on its own interval, so poll for several minutes
+          # before declaring failure rather than checking once after 90s.
+          MAX_ATTEMPTS=12
+          SLEEP=45
+          RESULTS=""
+          ALL_BLOCKED=false
+
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            RESULTS=""
+            ALL_BLOCKED=true
+            for region in "${!GATEWAYS[@]}"; do
+              ip="${GATEWAYS[$region]}"
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+                -H "Host: ipfs.orbitor.dev" \
+                "http://${ip}/ipfs/${CID}" 2>/dev/null || echo "timeout")
+              if [[ "$STATUS" == "410" || "$STATUS" == "403" || "$STATUS" == "451" ]]; then
+                RESULTS+="| ${region} | ${STATUS} | Blocked |\n"
+              else
+                RESULTS+="| ${region} | ${STATUS} | NOT blocked |\n"
+                ALL_BLOCKED=false
+              fi
+            done
+
+            if [[ "$ALL_BLOCKED" == "true" ]]; then
+              echo "All gateways blocked on attempt $attempt"
+              break
+            fi
+            if [[ "$attempt" -lt "$MAX_ATTEMPTS" ]]; then
+              echo "Attempt $attempt/$MAX_ATTEMPTS: not all blocked yet, waiting ${SLEEP}s..."
+              sleep "$SLEEP"
+            fi
+          done
+
+          {
+            echo "results<<EOF"
+            echo -e "$RESULTS"
+            echo "EOF"
+            echo "all_blocked=$ALL_BLOCKED"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment results on issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const duplicate = '${{ steps.check.outputs.duplicate }}';
+            const cid = '${{ steps.extract.outputs.cid }}';
+            const allBlocked = '${{ steps.verify.outputs.all_blocked }}';
+            const results = `${{ steps.verify.outputs.results }}`;
+
+            let body;
+            if (duplicate === 'true') {
+              body = [
+                `CID \`${cid}\` is already in the denylist. No action needed.`,
+                '',
+                'Closing as duplicate.'
+              ].join('\n');
+            } else if (allBlocked === 'true') {
+              body = [
+                `CID \`${cid}\` has been added to the denylist and verified on all gateways.`,
+                '',
+                '| Region | HTTP Status | Result |',
+                '|---|---|---|',
+                results.trim(),
+                '',
+                'Closing as resolved.'
+              ].join('\n');
+            } else {
+              body = [
+                `CID \`${cid}\` has been added to the denylist but **verification failed on some gateways**.`,
+                '',
+                '| Region | HTTP Status | Result |',
+                '|---|---|---|',
+                results.trim(),
+                '',
+                'Labeling `needs-attention` for manual follow-up. Rainbow may need more time to poll the denylist, or the gateway may need a restart.'
+              ].join('\n');
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body
+            });
+
+      - name: Close issue if resolved
+        if: steps.check.outputs.duplicate == 'true' || steps.verify.outputs.all_blocked == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              state: 'closed',
+              state_reason: 'completed'
+            });
+
+      - name: Label for follow-up if verification failed
+        if: steps.check.outputs.duplicate == 'false' && steps.verify.outputs.all_blocked == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: ['needs-attention']
+            });

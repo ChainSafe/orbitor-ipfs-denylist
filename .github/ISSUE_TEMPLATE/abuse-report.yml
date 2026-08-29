@@ -1,0 +1,58 @@
+name: Abuse Report (internal)
+description: Maintainer/automation use. Adds a CID to the Orbitor gateway denylist.
+title: "Block: [CID]"
+body:
+  - type: markdown
+    attributes:
+      value: >
+        **Internal / automation use only.** External abuse reports should go to
+        `abuse@chainsafe.io` or the IPFS Foundation form, not this tracker.
+        A maintainer must apply the `abuse-report` label to trigger the block.
+        This repository is **public**: do not paste reporter PII, ticket
+        contents, or raw abuse evidence here. Keep the full report in the abuse
+        mailbox.
+  - type: input
+    id: cid
+    attributes:
+      label: CID or IPFS Path
+      description: >
+        The IPFS CID or path to block. Accepts bare CID (bafybeig7rsd...) or full path (/ipfs/bafybeig7rsd...).
+      placeholder: "bafybeig7rsd..."
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Report Source
+      description: Where did this abuse report originate?
+      options:
+        - Cherry Servers
+        - Latitude.sh
+        - OVH
+        - IPFS Foundation
+        - User report
+        - Internal discovery
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - Phishing
+        - Malware
+        - CSAM
+        - Copyright / DMCA
+        - Scam
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: >
+        Non-identifying context only (e.g. a provider ticket reference). Do not
+        include reporter PII or the raw abuse report. This repo is public.
+    validations:
+      required: false
